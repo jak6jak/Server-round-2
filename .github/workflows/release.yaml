@@ -1,6 +1,6 @@
 name: '📦 Release'
 on:
-  # Make a release whenever the developer wants.
+  # Manual trigger.
   workflow_dispatch:
     inputs:
       bump:
@@ -8,22 +8,30 @@ on:
         description: "major, minor, or patch"
         required: true
         default: "patch"
-  # Make a release whenever we're told to by another workflow.
+  # Reusable workflow trigger.
   workflow_call:
     secrets:
       NUGET_API_KEY:
         description: "API key for Nuget"
         required: true
-      GH_BASIC:
-        description: "Personal access token (PAT) for GitHub"
-        required: true
-    # Input unifies with the workflow dispatch since it's identical.
     inputs:
       bump:
         type: string
         description: "major, minor, or patch"
         required: true
         default: "patch"
+
+# Prevent overlapping releases on the same ref.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write      # create release & read tags
+  packages: write      # (future) if publishing to GHCR
+  actions: read
+  id-token: write      # (future) OIDC usage if moving off API keys
+
 jobs:
   release:
     name: '📦 Release'
@@ -35,7 +43,6 @@ jobs:
       - name: 🧾 Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GH_BASIC }}
           lfs: true
           submodules: 'recursive'
           fetch-depth: 0 # So we can get all tags.
@@ -57,25 +64,21 @@ jobs:
           project-version: ${{ steps.current-version.outputs.tag }}
           godot-version: global.json
           bump: ${{ inputs.bump }}
-
       - uses: actions/setup-dotnet@v4
         name: 💽 Setup .NET SDK
         with:
-          # Use the .NET SDK from global.json in the root of the repository.
           global-json-file: global.json
+          cache: true
 
-      # Write version to file so .NET will build correct version.
-      - name: 📝 Write Version to File
-        uses: jacobtomlinson/gha-find-replace@v3
-        with:
-          find: "0.0.0-devbuild"
-          replace: ${{ steps.next-version.outputs.version }}
-          regex: false
-          include: Server2/Server2.csproj
+      - name: 📦 Restore
+        run: dotnet restore Server2/Server2.csproj
 
-      - name: 📦 Build
-        working-directory: Server2
-        run: dotnet build -c Release
+      - name: � Build (Version Override)
+        run: |
+          set -euo pipefail
+          dotnet build Server2/Server2.csproj -c Release -p:Version=${{ steps.next-version.outputs.version }}
+
+      # Package generation occurs due to GeneratePackageOnBuild. Version overridden above.
 
       - name: 🔎 Get Package Path
         id: package-path
@@ -84,9 +87,16 @@ jobs:
           echo "package=$package" >> "$GITHUB_OUTPUT"
           echo "📦 Found package: $package"
 
+      - name: 📤 Upload Package Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: ${{ steps.package-path.outputs.package }}
+          if-no-files-found: error
+
       - name: ✨ Create Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_BASIC }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${{ steps.next-version.outputs.version }}"
           gh release create --title "v$version" --generate-notes "$version" \
