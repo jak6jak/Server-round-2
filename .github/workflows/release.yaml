@@ -10,10 +10,6 @@ on:
         default: "patch"
   # Reusable workflow trigger.
   workflow_call:
-    secrets:
-      NUGET_API_KEY:
-        description: "API key for Nuget"
-        required: true
     inputs:
       bump:
         type: string
@@ -73,37 +69,46 @@ jobs:
       - name: 📦 Restore
         run: dotnet restore Server2/Server2.csproj
 
-      - name: � Build (Version Override)
+      - name: 🛠 Build (Version Override)
         run: |
           set -euo pipefail
           dotnet build Server2/Server2.csproj -c Release -p:Version=${{ steps.next-version.outputs.version }}
 
-      # Package generation occurs due to GeneratePackageOnBuild. Version overridden above.
+      # Build & push Docker image to GHCR.
+      - name: 🧰 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: 🔎 Get Package Path
-        id: package-path
-        run: |
-          package=$(find ./Server2/nupkg -name "*.nupkg")
-          echo "package=$package" >> "$GITHUB_OUTPUT"
-          echo "📦 Found package: $package"
-
-      - name: 📤 Upload Package Artifact
-        uses: actions/upload-artifact@v4
+      - name: 🔐 Login to GHCR
+        uses: docker/login-action@v3
         with:
-          name: nuget-package
-          path: ${{ steps.package-path.outputs.package }}
-          if-no-files-found: error
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🏷 Prepare Image Tags
+        id: image
+        run: |
+          VERSION=${{ steps.next-version.outputs.version }}
+          REPO_IMAGE=ghcr.io/${{ github.repository_owner }}/server2
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "repo_image=$REPO_IMAGE" >> $GITHUB_OUTPUT
+          echo "tags=$REPO_IMAGE:$VERSION,$REPO_IMAGE:latest" >> $GITHUB_OUTPUT
+
+      - name: � Build & Push Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          build-args: |
+            VERSION=${{ steps.next-version.outputs.version }}
+          tags: ${{ steps.image.outputs.tags }}
+          provenance: false
 
       - name: ✨ Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${{ steps.next-version.outputs.version }}"
-          gh release create --title "v$version" --generate-notes "$version" \
-            "${{ steps.package-path.outputs.package }}"
-
-      - name: 🛜 Publish to Nuget
-        run: |
-          dotnet nuget push "${{ steps.package-path.outputs.package }}" \
-            --api-key "${{ secrets.NUGET_API_KEY }}" \
-            --source "https://api.nuget.org/v3/index.json" --skip-duplicate
+          notes="Docker image: ghcr.io/${{ github.repository_owner }}/server2:$version"
+          gh release create "$version" --title "v$version" --notes "$notes" --generate-notes

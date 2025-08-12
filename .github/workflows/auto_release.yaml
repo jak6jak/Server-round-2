@@ -23,6 +23,11 @@ on:
     types:
       - completed
 
+# Grant permissions needed by the called reusable release workflow.
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   auto_release:
     name: 🦾 Auto-Release
@@ -33,8 +38,6 @@ jobs:
       - name: 🧾 Checkout
         uses: actions/checkout@v4
         with:
-          # Use your GitHub Personal Access Token variable here.
-          token: ${{ secrets.GH_BASIC }}
           lfs: true
           submodules: 'recursive'
 
@@ -59,10 +62,11 @@ jobs:
         run: |
           echo "Tests passed: ${{ steps.tests.outputs.passed }}"
           echo "Dependencies changed: ${{ steps.deps.outputs.changed }}"
-          disable_auto_release='${{ vars.DISABLE_AUTO_RELEASE }}'
+          # DISABLE_AUTO_RELEASE can be set as a repository variable; treat unset as false.
+          disable_auto_release="${DISABLE_AUTO_RELEASE:-false}"
           echo "DISABLE_AUTO_RELEASE=$disable_auto_release"
 
-          if [[ ${{ steps.tests.outputs.passed }} == "true" && ${{ steps.deps.outputs.changed }} == "true" && $disable_auto_release != "true" ]]; then
+          if [[ "${{ steps.tests.outputs.passed }}" == "true" && "${{ steps.deps.outputs.changed }}" == "true" && "$disable_auto_release" != "true" ]]; then
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "🦾 Creating a release!"
           else
@@ -76,6 +80,5 @@ jobs:
     if: needs.auto_release.outputs.should_release == 'true'
     secrets:
       NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-      GH_BASIC: ${{ secrets.GH_BASIC }}
     with:
       bump: patch
